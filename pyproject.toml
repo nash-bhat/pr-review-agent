@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pr-review-agent"
+version = "0.1.0"
+description = "A hand-written tool-use agent that reviews GitHub pull requests"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=2.0",
+    "ruff>=0.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+review = "pr_review_agent.cli:main"
+
+[tool.setuptools]
+packages = ["pr_review_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
