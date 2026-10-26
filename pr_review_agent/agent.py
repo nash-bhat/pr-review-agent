@@ -120,13 +120,15 @@ def run_agent(
     tools = tools if tools is not None else default_tools()
     schemas = [t.schema() for t in tools.values()] + [SUBMIT_REVIEW]
     messages: list[dict] = [{"role": "user", "content": f"Review this pull request: {pr_url}"}]
-    usage, called = Usage(), []
+    usage, called, already_sent = Usage(), [], 0
     log.debug("system prompt (sent every turn):\n%s", SYSTEM_PROMPT)
     log.debug("tool definitions (sent every turn):\n%s", json.dumps(schemas, indent=2))
     log.info("user message: %s", messages[0]["content"])
 
     for iteration in range(1, max_iterations + 1):
         log.info("── turn %d/%d: sending %d message(s) to the model", iteration, max_iterations, len(messages))
+        _log_request(messages, already_sent)
+        already_sent = len(messages)
         started = time.monotonic()
         response = llm.create(SYSTEM_PROMPT, messages, schemas)
         _log_response(response, time.monotonic() - started, usage)
@@ -162,6 +164,31 @@ def run_agent(
 
     log.warning("hit the %d-turn limit without a review", max_iterations)
     return AgentResult(None, "max_iterations", max_iterations, called, usage)
+
+
+def _log_request(messages: list[dict], already_sent: int) -> None:
+    """List every message in this request; earlier ones are re-sent history, the rest are new."""
+    for i, m in enumerate(messages):
+        tag = "re-sent" if i < already_sent else "NEW"
+        content = m["content"]
+        parts = [_short(content, 120)] if isinstance(content, str) else [_describe(b) for b in content]
+        log.info("   [%d] %-9s %-7s %s", i + 1, m["role"], tag, " | ".join(parts))
+
+
+def _describe(block) -> str:
+    """One-line summary of a content block (a plain dict, or an SDK object from the real API)."""
+    get = block.get if isinstance(block, dict) else lambda k, d=None: getattr(block, k, d)
+    kind = get("type")
+    if kind == "text":
+        return f"text {_short(get('text', ''), 80)!r}"
+    if kind == "thinking":
+        return f"thinking ({len(get('thinking') or '')} chars shown; sent back as-is)"
+    if kind == "tool_use":
+        return f"tool_use {get('name')} {_short(json.dumps(get('input')), 60)}"
+    if kind == "tool_result":
+        status = "ERROR" if get("is_error") else "ok"
+        return f"tool_result {status} {len(get('content') or '')} chars {_short(get('content') or '', 50)!r}"
+    return str(kind)
 
 
 def _short(text: str, limit: int) -> str:
