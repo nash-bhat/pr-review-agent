@@ -121,6 +121,9 @@ def run_agent(
     schemas = [t.schema() for t in tools.values()] + [SUBMIT_REVIEW]
     messages: list[dict] = [{"role": "user", "content": f"Review this pull request: {pr_url}"}]
     usage, called = Usage(), []
+    log.debug("system prompt (sent every turn):\n%s", SYSTEM_PROMPT)
+    log.debug("tool definitions (sent every turn):\n%s", json.dumps(schemas, indent=2))
+    log.info("user message: %s", messages[0]["content"])
 
     for iteration in range(1, max_iterations + 1):
         log.info("── turn %d/%d: sending %d message(s) to the model", iteration, max_iterations, len(messages))
@@ -134,7 +137,7 @@ def run_agent(
             log.warning("model refused; stopping")
             return AgentResult(None, "refused", iteration, called, usage)
         if not response.tool_calls:  # the model only talked; remind it how to finish
-            log.info("no tool call: nudging the model to call submit_review")
+            log.info("no tool call: nudging the model. user message: %s", NUDGE)
             messages.append({"role": "user", "content": NUDGE})
             continue
 
