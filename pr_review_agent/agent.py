@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import re
+import time
 from dataclasses import dataclass, field
 
-from pr_review_agent.llm import LLMClient, Usage
-from pr_review_agent.tools import Tool, default_tools, run_tool
+from pr_review_agent.llm import LLMClient, LLMResponse, Usage
+from pr_review_agent.tools import Tool, ToolResult, default_tools, run_tool
+
+log = logging.getLogger("pr_review_agent")  # silent unless the CLI's -v / -vv turns it on
 
 MAX_ITERATIONS = 10
 TOOL_TIMEOUT_S = 30.0
@@ -57,6 +63,7 @@ SUBMIT_REVIEW = {
 }
 
 NUDGE = "You have not submitted the review yet. Call submit_review now with your findings."
+LEAKED_MARKUP = re.compile(r"</?(parameter|invoke|function_calls)\b|</(summary|issues|suggestions)>")
 
 
 @dataclass
@@ -85,6 +92,12 @@ class Review:
         for issue in issues:
             if issue.severity not in ("low", "medium", "high"):
                 raise ValueError(f"invalid severity {issue.severity!r}; use low, medium or high")
+        # Seen in a real run: the model wrote its issues as tool-call markup inside `summary`
+        # and sent `issues: []`. The schema can't catch that, since every field has the right type.
+        texts = [review.summary, *review.suggestions, *(i.message for i in issues)]
+        if any(LEAKED_MARKUP.search(t) for t in texts):
+            raise ValueError("tool-call markup (e.g. '<parameter name=...>') found inside a text field. "
+                             "Put each issue in the `issues` array as a JSON object and resubmit.")
         return review
 
 
@@ -110,30 +123,65 @@ def run_agent(
     usage, called = Usage(), []
 
     for iteration in range(1, max_iterations + 1):
+        log.info("── turn %d/%d: sending %d message(s) to the model", iteration, max_iterations, len(messages))
+        started = time.monotonic()
         response = llm.create(SYSTEM_PROMPT, messages, schemas)
+        _log_response(response, time.monotonic() - started, usage)
         usage.add(response.usage)
         messages.append({"role": "assistant", "content": response.assistant_content})
 
         if response.stop_reason == "refusal":
+            log.warning("model refused; stopping")
             return AgentResult(None, "refused", iteration, called, usage)
         if not response.tool_calls:  # the model only talked; remind it how to finish
+            log.info("no tool call: nudging the model to call submit_review")
             messages.append({"role": "user", "content": NUDGE})
             continue
 
         results = []
         for call in response.tool_calls:
             called.append(call.name)
+            log.info("tool call → %s(%s)", call.name, _short(json.dumps(call.input), 300))
             if call.name == SUBMIT_REVIEW["name"]:
                 try:
-                    return AgentResult(Review.from_tool_input(call.input), "completed", iteration, called, usage)
+                    review = Review.from_tool_input(call.input)
+                    log.info("review accepted: %d issue(s); stopping after %d turn(s)", len(review.issues), iteration)
+                    return AgentResult(review, "completed", iteration, called, usage)
                 except ValueError as e:  # malformed review: send the error back and let it retry
+                    log.warning("review rejected: %s", e)
                     results.append(_tool_result(call.id, f"Error: {e}", is_error=True))
                     continue
+            started = time.monotonic()
             result = run_tool(tools, call.name, call.input, tool_timeout_s)
+            _log_tool_result(call.name, result, time.monotonic() - started)
             results.append(_tool_result(call.id, result.content, result.is_error))
         messages.append({"role": "user", "content": results})  # all results of a turn in one message
 
+    log.warning("hit the %d-turn limit without a review", max_iterations)
     return AgentResult(None, "max_iterations", max_iterations, called, usage)
+
+
+def _short(text: str, limit: int) -> str:
+    text = text.replace("\n", "⏎")
+    return text if len(text) <= limit else f"{text[:limit]}… (+{len(text) - limit} chars)"
+
+
+def _log_response(response: LLMResponse, seconds: float, before: Usage) -> None:
+    u = response.usage
+    log.info("model replied in %.1fs · stop_reason=%s · +%d input / +%d output tokens (run total %d / %d)",
+             seconds, response.stop_reason, u.input_tokens, u.output_tokens,
+             before.input_tokens + u.input_tokens, before.output_tokens + u.output_tokens)
+    if response.thinking:
+        log.info("model thinking: %s", _short(response.thinking, 600))
+    if response.text:
+        log.info("model text: %s", _short(response.text, 600))
+
+
+def _log_tool_result(name: str, result: ToolResult, seconds: float) -> None:
+    status = "ERROR" if result.is_error else "ok"
+    log.info("tool result ← %s %s in %.2fs, %d chars: %s", name, status, seconds, len(result.content),
+             _short(result.content, 300))
+    log.debug("full %s result:\n%s", name, result.content)
 
 
 def _tool_result(tool_use_id: str, content: str, is_error: bool = False) -> dict:

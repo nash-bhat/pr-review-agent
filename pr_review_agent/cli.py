@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from collections.abc import Callable
@@ -44,7 +45,14 @@ def main(argv: list[str] | None = None, make_llm: Callable[[str | None], LLMClie
     parser.add_argument("--model", help="model id (default: $PR_REVIEW_MODEL / $GROQ_MODEL or the provider default)")
     parser.add_argument("--max-iterations", type=int, default=MAX_ITERATIONS)
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
+    parser.add_argument("-v", "--verbose", action="count", default=0,
+                        help="log each turn to stderr (-v: summaries, -vv: also full tool results)")
     args = parser.parse_args(argv)
+    if args.verbose:
+        logging.basicConfig(format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S",
+                            level=logging.DEBUG if args.verbose > 1 else logging.INFO)
+        # Only our logger: the SDK's and urllib's debug logs would include request headers.
+        logging.getLogger().handlers[0].addFilter(logging.Filter("pr_review_agent"))
 
     try:
         llm = (make_llm or PROVIDERS[args.provider])(args.model)

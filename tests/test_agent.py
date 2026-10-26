@@ -124,3 +124,21 @@ def test_refusal_stops_cleanly():
 def test_submit_review_schema_is_strict():
     assert SUBMIT_REVIEW["strict"] is True
     assert SUBMIT_REVIEW["input_schema"]["additionalProperties"] is False
+
+
+def test_tool_markup_leaked_into_summary_is_rejected_and_retried():
+    # Reproduces a real Haiku run: issues written as markup inside `summary`, `issues` left empty.
+    leaked = {**REVIEW, "issues": [],
+              "summary": 'Has bugs.</summary>\n<parameter name="issues">[{"file": "app/users.py", "line": 6}]'}
+    fake = FakeLLM([tool_call("submit_review", leaked), tool_call("submit_review", REVIEW)])
+    result = run_agent(PR, fake, offline_tools())
+    block = last_message(fake, 1)["content"][0]
+    assert block["is_error"] is True and "tool-call markup" in block["content"]
+    assert result.status == "completed" and len(result.review.issues) == 1
+
+
+def test_angle_brackets_in_normal_text_are_allowed():
+    # Code in a message (generics, comparisons) must not trip the markup check.
+    review = {**REVIEW, "summary": "Uses List<int> and checks a < b > c."}
+    result = run_agent(PR, FakeLLM([tool_call("submit_review", review)]), offline_tools())
+    assert result.status == "completed"

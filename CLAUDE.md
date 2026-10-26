@@ -27,6 +27,8 @@ cli.py ──► agent.run_agent(pr_url, llm, tools)
   schema *is* the review. That gives structured output and an explicit stop
   signal. It is defined in `agent.py`, not `tools.py`: the loop handles it
   itself and never executes it.
+- **Validate meaning, not just shape.** `Review.from_tool_input` also rejects tool-call markup
+  leaked into text fields (seen in a real Haiku run: issues written inside `summary`, `issues: []`).
 - **Errors are data.** A failing, slow or unknown tool becomes a `tool_result`
   with `is_error: true` so the model can react; the loop never crashes on a tool.
 - **`LLMResponse.assistant_content` is opaque.** The loop appends it to the
@@ -40,7 +42,7 @@ cli.py ──► agent.run_agent(pr_url, llm, tools)
 - `pr_review_agent/llm.py` – `LLMClient` protocol, `LLMResponse`, `AnthropicClient`, `GroqClient` + `to_openai_messages`, `FakeLLM` + script helpers (`tool_call`, `text_reply`).
 - `pr_review_agent/tools.py` – `Tool` dataclass, the three tools, `run_tool` (timeout + error handling), `default_tools()`.
 - `pr_review_agent/agent.py` – system prompt, `submit_review` schema, `Review`/`Issue`, `run_agent` loop and its limits.
-- `pr_review_agent/cli.py` – `review <pr-url>` entry point and output formatting. Exit codes: 0 review printed, 1 no review (limit hit or refusal), 2 setup/API error.
+- `pr_review_agent/cli.py` – `review <pr-url>` entry point and output formatting. `-v`/`-vv` turn on the `pr_review_agent` logger (each turn's tokens, latency, summarized thinking, tool calls and results); other loggers stay off so request headers are never logged. Exit codes: 0 review printed, 1 no review (limit hit or refusal), 2 setup/API error.
 - `tests/` – pytest; every test uses `FakeLLM` and never touches the network (`test_tools.py`, `test_agent.py`, `test_cli.py`, `test_llm.py`).
 - `README.md` – user-facing setup, usage and known limitations.
 

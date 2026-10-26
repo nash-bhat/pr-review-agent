@@ -46,6 +46,7 @@ class LLMResponse:
     text: str
     stop_reason: str
     usage: Usage = field(default_factory=Usage)
+    thinking: str = ""  # summarized reasoning, for logs only; never parsed by the loop
 
 
 class LLMClient(Protocol):
@@ -69,6 +70,9 @@ class AnthropicClient:
             system=system,
             messages=messages,
             tools=tools,
+            # "summarized" makes the model's reasoning readable in -v logs. Thinking is billed
+            # the same whether it is shown or hidden, so this costs nothing extra.
+            thinking={"type": "adaptive", "display": "summarized"},
         )
         return LLMResponse(
             assistant_content=list(response.content),
@@ -80,6 +84,7 @@ class AnthropicClient:
             text="".join(b.text for b in response.content if b.type == "text"),
             stop_reason=response.stop_reason or "",
             usage=Usage(response.usage.input_tokens, response.usage.output_tokens),
+            thinking="\n".join(b.thinking for b in response.content if b.type == "thinking" and b.thinking),
         )
 
 

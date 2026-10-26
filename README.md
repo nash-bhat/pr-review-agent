@@ -39,9 +39,14 @@ git clone https://github.com/nash-bhat/pr-review-agent && cd pr-review-agent
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
-For real runs, put your key in a `.env` file (it is git-ignored) and load it:
+For real runs, put your key in a `.env` file (it is git-ignored) and load it.
+Create it with an editor (e.g. `nano .env`) rather than `echo`, so the key does not
+end up in your shell history:
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
 ```bash
-echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env
+chmod 600 .env
 set -a; source .env; set +a
 ```
 Optional settings:
@@ -67,6 +72,8 @@ review https://github.com/OWNER/REPO/pull/123          # human-readable review
 review https://github.com/OWNER/REPO/pull/123 --json   # full result as JSON
 review URL --model claude-sonnet-5-5 --max-iterations 6
 review URL --provider groq                              # use Groq (needs GROQ_API_KEY)
+review URL -v      # log every turn: tokens, latency, the model's summarized thinking, tool calls and results
+review URL -vv     # also log full tool results
 ```
 Exit codes: `0` review printed, `1` the agent stopped without a review, `2` setup
 or API error (e.g. no API key).
