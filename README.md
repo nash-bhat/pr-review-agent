@@ -48,11 +48,25 @@ Optional settings:
 - `PR_REVIEW_MODEL`: model id, default `claude-haiku-5-5` (the cheapest current model).
 - `GITHUB_TOKEN`: raises GitHub's API rate limit and allows private repos.
 
+### Using Groq instead of Claude
+The agent can also run an open model on [Groq](https://console.groq.com) through
+its OpenAI-compatible API, e.g. with a free-tier key:
+```bash
+echo 'GROQ_API_KEY=gsk_...' >> .env
+echo 'PR_REVIEW_PROVIDER=groq' >> .env      # or pass --provider groq each time
+set -a; source .env; set +a
+```
+- `GROQ_MODEL`: default `llama-3.3-70b-versatile`. Groq's model list changes; pick
+  one marked as supporting tool use from `https://console.groq.com/docs/models`.
+- Free tiers have tokens-per-minute limits. The whole diff is re-sent every turn,
+  so a large PR can hit HTTP 429; wait a minute or try a smaller PR.
+
 ## Usage
 ```bash
 review https://github.com/OWNER/REPO/pull/123          # human-readable review
 review https://github.com/OWNER/REPO/pull/123 --json   # full result as JSON
 review URL --model claude-sonnet-5-5 --max-iterations 6
+review URL --provider groq                              # use Groq (needs GROQ_API_KEY)
 ```
 Exit codes: `0` review printed, `1` the agent stopped without a review, `2` setup
 or API error (e.g. no API key).

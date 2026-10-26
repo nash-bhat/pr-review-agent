@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import itertools
+import json
 import os
+import urllib.error
+import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 DEFAULT_MODEL = "claude-haiku-5-5"  # cheapest current Claude model; override with PR_REVIEW_MODEL
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"  # Groq's catalogue changes; override with GROQ_MODEL
 
 
 @dataclass
@@ -76,6 +81,86 @@ class AnthropicClient:
             stop_reason=response.stop_reason or "",
             usage=Usage(response.usage.input_tokens, response.usage.output_tokens),
         )
+
+
+def _post_json(url: str, body: dict, headers: dict[str, str]) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Groq API returned HTTP {e.code}: {detail}") from e
+
+
+class GroqClient:
+    """Calls an open model on Groq through its OpenAI-compatible API (needs GROQ_API_KEY).
+
+    An adapter: the loop speaks Anthropic's message format, so each call translates the
+    conversation to OpenAI's format and the reply back into Anthropic-shaped blocks.
+    """
+
+    URL = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(self, model: str | None = None, max_tokens: int = 4096,
+                 post: Callable[[str, dict, dict[str, str]], dict] = _post_json):
+        self.api_key = os.environ.get("GROQ_API_KEY")
+        if not self.api_key:
+            raise RuntimeError("GROQ_API_KEY is not set")
+        self.model = model or os.environ.get("GROQ_MODEL", DEFAULT_GROQ_MODEL)
+        self.max_tokens = max_tokens
+        self.post = post
+
+    def create(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
+        body = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": to_openai_messages(system, messages),
+            "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"],
+                                                        "parameters": t["input_schema"]}} for t in tools],
+        }
+        # A User-Agent is required: Groq's CDN rejects Python's default one.
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json",
+                   "User-Agent": "pr-review-agent"}
+        data = self.post(self.URL, body, headers)
+        choice = data["choices"][0]
+        message = choice["message"]
+        calls = [ToolCall(tc["id"], tc["function"]["name"], _parse_args(tc["function"]["arguments"]))
+                 for tc in message.get("tool_calls") or []]
+        text = message.get("content") or ""
+        content: list[Any] = [{"type": "text", "text": text}] if text else []
+        content += [{"type": "tool_use", "id": c.id, "name": c.name, "input": c.input} for c in calls]
+        stop = {"tool_calls": "tool_use", "stop": "end_turn", "length": "max_tokens"}
+        usage = data.get("usage") or {}
+        return LLMResponse(content, calls, text, stop.get(choice.get("finish_reason"), "end_turn"),
+                           Usage(usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)))
+
+
+def _parse_args(raw: str) -> dict[str, Any]:
+    """OpenAI-style APIs send tool arguments as a JSON string, which a model can get wrong."""
+    try:
+        args = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {"_invalid_json": raw}  # the tool then fails with "bad arguments" and the model can retry
+    return args if isinstance(args, dict) else {"_invalid_json": raw}
+
+
+def to_openai_messages(system: str, messages: list[dict]) -> list[dict]:
+    """Translate the loop's Anthropic-format history (dict blocks) into OpenAI chat messages."""
+    out: list[dict] = [{"role": "system", "content": system}]
+    for m in messages:
+        if isinstance(m["content"], str):
+            out.append({"role": m["role"], "content": m["content"]})
+        elif m["role"] == "assistant":
+            text = "".join(b["text"] for b in m["content"] if b["type"] == "text")
+            calls = [{"id": b["id"], "type": "function",
+                      "function": {"name": b["name"], "arguments": json.dumps(b["input"])}}
+                     for b in m["content"] if b["type"] == "tool_use"]
+            out.append({"role": "assistant", "content": text or None, **({"tool_calls": calls} if calls else {})})
+        else:  # a user message holding tool results: one "tool" message per result
+            out += [{"role": "tool", "tool_call_id": b["tool_use_id"], "content": b["content"]}
+                    for b in m["content"] if b["type"] == "tool_result"]
+    return out
 
 
 class FakeLLM:

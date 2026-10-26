@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import asdict
 
 from pr_review_agent.agent import MAX_ITERATIONS, AgentResult, Review, run_agent
-from pr_review_agent.llm import AnthropicClient, LLMClient
+from pr_review_agent.llm import AnthropicClient, GroqClient, LLMClient
 
+PROVIDERS: dict[str, Callable[[str | None], LLMClient]] = {"anthropic": AnthropicClient, "groq": GroqClient}
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
@@ -33,20 +35,25 @@ def format_footer(result: AgentResult) -> str:
             f"{result.usage.input_tokens:,} input / {result.usage.output_tokens:,} output tokens")
 
 
-def main(argv: list[str] | None = None, make_llm: Callable[[str | None], LLMClient] = AnthropicClient) -> int:
-    parser = argparse.ArgumentParser(prog="review", description="Review a GitHub pull request with Claude.")
+def main(argv: list[str] | None = None, make_llm: Callable[[str | None], LLMClient] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="review", description="Review a GitHub pull request with an LLM agent.")
     parser.add_argument("pr_url", help="e.g. https://github.com/OWNER/REPO/pull/123")
-    parser.add_argument("--model", help="Claude model id (default: $PR_REVIEW_MODEL or claude-haiku-5-5)")
+    parser.add_argument("--provider", choices=sorted(PROVIDERS),
+                        default=os.environ.get("PR_REVIEW_PROVIDER", "anthropic"),
+                        help="LLM provider (default: $PR_REVIEW_PROVIDER or anthropic)")
+    parser.add_argument("--model", help="model id (default: $PR_REVIEW_MODEL / $GROQ_MODEL or the provider default)")
     parser.add_argument("--max-iterations", type=int, default=MAX_ITERATIONS)
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     args = parser.parse_args(argv)
 
     try:
-        result = run_agent(args.pr_url, make_llm(args.model), max_iterations=args.max_iterations)
+        llm = (make_llm or PROVIDERS[args.provider])(args.model)
+        result = run_agent(args.pr_url, llm, max_iterations=args.max_iterations)
     except Exception as e:  # noqa: BLE001 - missing API key, network or API errors: report, don't trace
         print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
-        if "authentication" in str(e).lower():
-            print("hint: export ANTHROPIC_API_KEY=... and try again (see README: Setup)", file=sys.stderr)
+        if "authentication" in str(e).lower() or "API_KEY" in str(e):
+            key = "GROQ_API_KEY" if args.provider == "groq" else "ANTHROPIC_API_KEY"
+            print(f"hint: export {key}=... and try again (see README: Setup)", file=sys.stderr)
         return 2
 
     if args.json:

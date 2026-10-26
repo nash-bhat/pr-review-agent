@@ -17,7 +17,8 @@ cli.py ──► agent.run_agent(pr_url, llm, tools)
               │    model calls submit_review ──► Review, stop
               ▼
            llm.py:   LLMClient protocol
-                     ├─ AnthropicClient  (real API)
+                     ├─ AnthropicClient  (real API, default)
+                     ├─ GroqClient       (open models via Groq's OpenAI-compatible API)
                      └─ FakeLLM          (scripted replies, tests only, no network)
            tools.py: fetch_pr_diff, run_linter (ruff), search_docs (stub)
 ```
@@ -31,13 +32,16 @@ cli.py ──► agent.run_agent(pr_url, llm, tools)
 - **`LLMResponse.assistant_content` is opaque.** The loop appends it to the
   history unchanged (real SDK blocks, including thinking blocks, must be
   passed back as-is). The loop only *reads* the parsed `tool_calls`.
+- **The loop speaks Anthropic's message format.** Other providers are adapters:
+  `GroqClient` translates the history to OpenAI's format on every call
+  (`to_openai_messages`) and its reply back into Anthropic-shaped dict blocks.
 
 ## Folder layout
-- `pr_review_agent/llm.py` – `LLMClient` protocol, `LLMResponse`, `AnthropicClient`, `FakeLLM` + script helpers (`tool_call`, `text_reply`).
+- `pr_review_agent/llm.py` – `LLMClient` protocol, `LLMResponse`, `AnthropicClient`, `GroqClient` + `to_openai_messages`, `FakeLLM` + script helpers (`tool_call`, `text_reply`).
 - `pr_review_agent/tools.py` – `Tool` dataclass, the three tools, `run_tool` (timeout + error handling), `default_tools()`.
 - `pr_review_agent/agent.py` – system prompt, `submit_review` schema, `Review`/`Issue`, `run_agent` loop and its limits.
 - `pr_review_agent/cli.py` – `review <pr-url>` entry point and output formatting. Exit codes: 0 review printed, 1 no review (limit hit or refusal), 2 setup/API error.
-- `tests/` – pytest; every test uses `FakeLLM` and never touches the network (`test_tools.py`, `test_agent.py`, `test_cli.py`).
+- `tests/` – pytest; every test uses `FakeLLM` and never touches the network (`test_tools.py`, `test_agent.py`, `test_cli.py`, `test_llm.py`).
 - `README.md` – user-facing setup, usage and known limitations.
 
 ## Coding conventions
@@ -53,6 +57,8 @@ cli.py ──► agent.run_agent(pr_url, llm, tools)
 - `ANTHROPIC_API_KEY` – required for real runs only.
 - `PR_REVIEW_MODEL` – model id, default `claude-haiku-5-5` (the cheapest current model).
 - `GITHUB_TOKEN` – optional; raises GitHub's rate limit and allows private repos.
+- `PR_REVIEW_PROVIDER` – `anthropic` (default) or `groq`; same as `--provider`.
+- `GROQ_API_KEY`, `GROQ_MODEL` – for the Groq provider; model default `llama-3.3-70b-versatile`.
 
 ## Run and test
 ```bash
